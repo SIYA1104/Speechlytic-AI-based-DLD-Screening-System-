@@ -1,4 +1,3 @@
-<div align="center">
 <img width="800" height="260" alt="speechlytic-logo" src="https://github.com/user-attachments/assets/c18fd399-98a8-48b7-88a3-80442c61b51c" />
 
 # Speechlytic
