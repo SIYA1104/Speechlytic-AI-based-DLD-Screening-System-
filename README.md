@@ -45,7 +45,7 @@ Speechlytic focuses on combining acoustic analysis with language-oriented assess
 
 ### 📊 Acoustic Feature Extraction
 
-VocaSense extracts measurable acoustic characteristics, including:
+Speechlytic extracts measurable acoustic characteristics, including:
 
 - Mel-Frequency Cepstral Coefficients (MFCCs).
 - Root Mean Square (RMS) energy.
@@ -90,7 +90,7 @@ A directory intended to help users discover speech-language professionals and ex
 
 ## 🧠 Artificial Intelligence & Machine Learning
 
-VocaSense incorporates audio feature extraction and machine-learning experimentation to investigate measurable patterns in children's speech.
+Speechlytic incorporates audio feature extraction and machine-learning experimentation to investigate measurable patterns in children's speech.
 
 The current research direction includes acoustic feature analysis, exploratory pattern comparison and experimentation with machine-learning techniques.
 
@@ -100,18 +100,18 @@ The objective is to investigate whether combinations of acoustic and linguistic 
 
 ## 🛠️ Technology Stack
 
-| Component               | Technology                 |
-| ----------------------- | -------------------------- |
-| Frontend                | Next.js, React, TypeScript |
-| Backend                 | Python, FastAPI            |
-| Audio Processing        | Librosa, SoundFile, NumPy  |
-| Machine Learning        | Scikit-learn               |
-| API Communication       | REST API                   |
-| Development Environment | Node.js, Python            |
+| Component | Technology |
+|---|---|
+| Frontend | Next.js, React, TypeScript |
+| Backend | Python, FastAPI |
+| Audio Processing | Librosa, SoundFile, NumPy |
+| Machine Learning | Scikit-learn |
+| API Communication | REST API |
+| Development Environment | Node.js, Python |
 
 ## 🏗️ System Architecture
 
-VocaSense follows a frontend-backend architecture.
+Speechlytic follows a frontend-backend architecture.
 
 **Frontend Layer:** Provides the user interface for audio recording, file uploads, story-based activities, dataset management and analytical visualisation.
 
@@ -138,7 +138,7 @@ Ensure the following tools are installed:
 
 ```bash
 git clone YOUR_REPOSITORY_URL
-cd VocaSense
+cd Speechlytic
 ```
 
 ### Backend Setup
@@ -170,13 +170,9 @@ Start the FastAPI development server:
 python -m uvicorn app.main:app --reload
 ```
 
-Backend URL:
+**Backend URL:** `http://127.0.0.1:8000`
 
-`http://127.0.0.1:8000`
-
-API documentation:
-
-`http://127.0.0.1:8000/docs`
+**API Documentation:** `http://127.0.0.1:8000/docs`
 
 ### Frontend Setup
 
@@ -188,15 +184,13 @@ npm install
 npm run dev
 ```
 
-Frontend URL:
-
-`http://localhost:3000`
+**Frontend URL:** `http://localhost:3000`
 
 Keep both the frontend and backend servers running while using the application.
 
 ## 🔬 Research Scope
 
-The primary research focus of VocaSense is the exploration of acoustic and linguistic characteristics associated with Developmental Language Disorder in children.
+The primary research focus of Speechlytic is the exploration of acoustic and linguistic characteristics associated with Developmental Language Disorder in children.
 
 The research scope includes:
 
@@ -223,7 +217,7 @@ The research scope includes:
 
 ## ⚠️ Research & Clinical Disclaimer
 
-VocaSense is an experimental research prototype developed for educational and research purposes.
+Speechlytic is an experimental research prototype developed for educational and research purposes.
 
 Its outputs represent exploratory acoustic measurements and analytical observations. They must not be interpreted as a medical diagnosis, clinical risk score or definitive identification of Developmental Language Disorder.
 
@@ -233,24 +227,20 @@ Research involving children's speech recordings must follow appropriate ethical 
 
 ## 👥 Project Information
 
-| Category               | Details                                    |
-| ---------------------- | ------------------------------------------ |
-| Project Name           | VocaSense                                  |
-| Project Domain         | Artificial Intelligence & Speech Analytics |
-| Research Area          | Developmental Language Disorder            |
-| Application Type       | Web-Based Research Platform                |
-| Initial Language Focus | English                                    |
-| Primary Purpose        | Speech and Language Research               |
+| Category | Details |
+|---|---|
+| Project Name | Speechlytic |
+| Project Domain | Artificial Intelligence & Speech Analytics |
+| Research Area | Developmental Language Disorder |
+| Application Type | Web-Based Research Platform |
+| Initial Language Focus | English |
+| Primary Purpose | Speech and Language Research |
 
 ---
 
-\<div align="center">
-
-### VocaSense
+### Speechlytic
 
 **Understand Every Voice. Unlock Every Potential.**
 
 *Exploring the possibilities of AI for children's speech and language development.*
-
-\</div>
 
