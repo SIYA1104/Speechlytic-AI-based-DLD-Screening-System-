@@ -1,0 +1,242 @@
+from pathlib import Path
+import json
+import joblib
+import warnings
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+
+from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from sklearn.ensemble import IsolationForest
+from sklearn.metrics import silhouette_score
+
+warnings.filterwarnings("ignore")
+
+ROOT = Path(__file__).resolve().parents[1]
+INPUT = ROOT / "dataset" / "features" / "acoustic_features.csv"
+OUTPUT = ROOT / "dataset" / "model_exploration"
+
+OUTPUT.mkdir(parents=True, exist_ok=True)
+
+print("\n=== ACOUSTIC MODEL EXPLORATION ===")
+
+df = pd.read_csv(INPUT)
+print(f"Loaded records: {len(df)}")
+
+df = df[df["status"] == "VALID"].copy()
+print(f"Valid records: {len(df)}")
+
+review_path = ROOT / "dataset" / "reports" / "deduplication_cross_participant_review.csv"
+review = pd.read_csv(review_path)
+excluded_hashes = set(review["sha256"].dropna().astype(str))
+
+before_review = len(df)
+df = df[~df["sha256"].astype(str).isin(excluded_hashes)].copy()
+print(f"Cross-participant review records excluded: {before_review - len(df)}")
+
+before = len(df)
+df = df.drop_duplicates(subset=["sha256"], keep="first")
+print(f"Unique recordings after SHA-256 deduplication: {len(df)}")
+print(f"Duplicate records removed: {before - len(df)}")
+
+feature_columns = [
+    "duration_seconds",
+    "rms_mean",
+    "rms_max",
+    "silence_frame_fraction",
+    "clipping_sample_fraction",
+    "zero_crossing_rate_mean",
+    "spectral_centroid_mean_hz",
+    "spectral_bandwidth_mean_hz",
+    "spectral_rolloff_mean_hz",
+    "pitch_median_hz",
+    "pitch_std_hz",
+] + [
+    f"mfcc_{i:02d}_{stat}"
+    for i in range(1, 14)
+    for stat in ("mean", "std")
+]
+
+available = [c for c in feature_columns if c in df.columns]
+X = df[available].apply(pd.to_numeric, errors="coerce")
+
+# Remove features with no usable values.
+X = X.dropna(axis=1, how="all")
+available = X.columns.tolist()
+
+imputer = SimpleImputer(strategy="median")
+X_imputed = imputer.fit_transform(X)
+
+scaler = StandardScaler()
+X_scaled = scaler.fit_transform(X_imputed)
+
+print(f"Features used: {len(available)}")
+print(f"Training samples: {X_scaled.shape[0]}")
+
+# K-Means exploratory clustering.
+n_clusters = 4
+kmeans = KMeans(
+    n_clusters=n_clusters,
+    random_state=42,
+    n_init=10
+)
+
+clusters = kmeans.fit_predict(X_scaled)
+
+# Isolation Forest exploratory anomaly detection.
+isolation = IsolationForest(
+    n_estimators=200,
+    contamination="auto",
+    random_state=42
+)
+
+anomaly_predictions = isolation.fit_predict(X_scaled)
+anomaly_scores = isolation.decision_function(X_scaled)
+
+# PCA for visualisation.
+pca = PCA(n_components=2, random_state=42)
+components = pca.fit_transform(X_scaled)
+
+results = df[
+    ["file_name", "participant_id", "sha256", "duration_seconds"]
+].copy()
+
+results["acoustic_cluster"] = clusters
+results["anomaly_prediction"] = np.where(
+    anomaly_predictions == -1,
+    "UNUSUAL_PATTERN",
+    "NORMAL_PATTERN"
+)
+results["anomaly_score"] = anomaly_scores
+results["pca_1"] = components[:, 0]
+results["pca_2"] = components[:, 1]
+
+results.to_csv(
+    OUTPUT / "acoustic_exploration_results.csv",
+    index=False
+)
+
+# Cluster summary.
+cluster_summary = (
+    results.groupby("acoustic_cluster")
+    .agg(
+        recording_count=("file_name", "count"),
+        participant_count=("participant_id", "nunique"),
+        mean_duration=("duration_seconds", "mean"),
+        unusual_recordings=(
+            "anomaly_prediction",
+            lambda x: (x == "UNUSUAL_PATTERN").sum()
+        )
+    )
+    .reset_index()
+)
+
+cluster_summary.to_csv(
+    OUTPUT / "cluster_summary.csv",
+    index=False
+)
+
+# Feature-level cluster profiles.
+profile = pd.DataFrame(X_scaled, columns=available)
+profile["acoustic_cluster"] = clusters
+profile.groupby("acoustic_cluster").mean().to_csv(
+    OUTPUT / "cluster_feature_profiles.csv"
+)
+
+# PCA visualisation.
+plt.figure(figsize=(10, 7))
+scatter = plt.scatter(
+    components[:, 0],
+    components[:, 1],
+    c=clusters,
+    cmap="viridis",
+    alpha=0.65,
+    s=12
+)
+plt.colorbar(scatter, label="Exploratory cluster")
+plt.xlabel("Principal Component 1")
+plt.ylabel("Principal Component 2")
+plt.title("Acoustic Feature Exploration - PCA")
+plt.tight_layout()
+plt.savefig(OUTPUT / "acoustic_pca_clusters.png", dpi=200)
+plt.close()
+
+# Anomaly visualisation.
+plt.figure(figsize=(10, 7))
+colors = np.where(anomaly_predictions == -1, 1, 0)
+plt.scatter(
+    components[:, 0],
+    components[:, 1],
+    c=colors,
+    cmap="coolwarm",
+    alpha=0.65,
+    s=12
+)
+plt.xlabel("Principal Component 1")
+plt.ylabel("Principal Component 2")
+plt.title("Exploratory Acoustic Anomaly Detection")
+plt.tight_layout()
+plt.savefig(OUTPUT / "acoustic_anomalies.png", dpi=200)
+plt.close()
+
+silhouette = None
+if len(set(clusters)) > 1 and len(clusters) > n_clusters:
+    silhouette = float(
+        silhouette_score(
+            X_scaled,
+            clusters,
+            sample_size=min(2000, len(X_scaled)),
+            random_state=42
+        )
+    )
+
+# Save fitted preprocessing and exploratory models for API integration.
+model_artifact = {
+    "feature_columns": available,
+    "imputer": imputer,
+    "scaler": scaler,
+    "kmeans": kmeans,
+    "isolation_forest": isolation,
+    "pca": pca,
+    "cluster_count": n_clusters,
+    "model_type": "unsupervised_acoustic_exploration",
+    "diagnostic_use": False,
+}
+
+joblib.dump(
+    model_artifact,
+    OUTPUT / "acoustic_exploration_pipeline.joblib"
+)
+print("Reusable model pipeline saved.")
+
+summary = {
+    "input_records": int(len(pd.read_csv(INPUT))),
+    "valid_records": int(before),
+    "unique_recordings_used": int(len(df)),
+    "features_used": available,
+    "cluster_count": n_clusters,
+    "silhouette_score": silhouette,
+    "pca_explained_variance_ratio": [
+        float(x) for x in pca.explained_variance_ratio_
+    ],
+    "unusual_pattern_count": int(
+        (anomaly_predictions == -1).sum()
+    ),
+    "model_interpretation": (
+        "Exploratory acoustic analysis only. "
+        "Clusters and anomalies are not DLD diagnoses."
+    )
+}
+
+with open(OUTPUT / "training_summary.json", "w") as f:
+    json.dump(summary, f, indent=4)
+
+print("\n=== TRAINING COMPLETE ===")
+print(cluster_summary.to_string(index=False))
+print("\nSilhouette score:", silhouette)
+print("Unusual patterns:", summary["unusual_pattern_count"])
+print("\nReports saved to:", OUTPUT)

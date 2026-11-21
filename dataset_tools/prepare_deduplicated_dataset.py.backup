@@ -1,0 +1,290 @@
+from pathlib import Path
+
+script = r'''#!/usr/bin/env python3
+"""
+Non-destructive WAV deduplication for the DLD Speech Analytics project.
+
+- Never deletes or modifies files in dataset/raw.
+- Copies one representative of each unique recording into:
+    dataset/preprocessing_input/unique_audio/
+- Places exact duplicates spanning multiple participant IDs into:
+    dataset/preprocessing_input/cross_participant_review/
+  These are excluded from the clean input until participant identity is verified.
+- Excludes zero-sample/unreadable WAVs from both input folders and records them.
+- Keeps long recordings; duration alone is not a reason to discard audio.
+- Writes CSV and JSON audit reports.
+
+Run from the project root:
+    .\\backend\\venv\\Scripts\\python.exe .\\dataset_tools\\prepare_deduplicated_dataset.py
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import re
+import shutil
+from collections import defaultdict
+from datetime import datetime, timezone
+from pathlib import Path
+
+import soundfile as sf
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+RAW_ROOT = PROJECT_ROOT / "dataset" / "raw"
+OUTPUT_ROOT = PROJECT_ROOT / "dataset" / "preprocessing_input"
+UNIQUE_ROOT = OUTPUT_ROOT / "unique_audio"
+CROSS_REVIEW_ROOT = OUTPUT_ROOT / "cross_participant_review"
+REPORT_ROOT = PROJECT_ROOT / "dataset" / "reports"
+
+PARTICIPANT_PATTERN = re.compile(r"^([FM]\d+)", re.IGNORECASE)
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def participant_id_from_filename(filename: str) -> str:
+    match = PARTICIPANT_PATTERN.match(filename)
+    return match.group(1).upper() if match else "UNKNOWN"
+
+
+def safe_copy(source: Path, destination_root: Path, relative_path: Path) -> Path:
+    destination = destination_root / relative_path
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, destination)
+    return destination
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Create a non-destructive deduplicated WAV input.")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Replace this script's previous output folders and reports. Raw audio is never touched.",
+    )
+    args = parser.parse_args()
+
+    if not RAW_ROOT.exists():
+        raise SystemExit(f"Raw dataset folder not found: {RAW_ROOT}")
+
+    wav_files = sorted(
+        (p for p in RAW_ROOT.rglob("*") if p.is_file() and p.suffix.lower() == ".wav"),
+        key=lambda p: p.relative_to(RAW_ROOT).as_posix().lower(),
+    )
+
+    if not wav_files:
+        raise SystemExit(f"No WAV files found under: {RAW_ROOT}")
+
+    # Avoid mixing a new run with stale output. Only remove generated output folders,
+    # and only when the user explicitly passes --force.
+    if OUTPUT_ROOT.exists():
+        existing_outputs = list(OUTPUT_ROOT.iterdir())
+        if existing_outputs and not args.force:
+            raise SystemExit(
+                f"Output already exists: {OUTPUT_ROOT}\n"
+                "Inspect it first. To replace only this script's generated output, rerun with --force."
+            )
+        if args.force:
+            shutil.rmtree(OUTPUT_ROOT)
+
+    REPORT_ROOT.mkdir(parents=True, exist_ok=True)
+    UNIQUE_ROOT.mkdir(parents=True, exist_ok=True)
+    CROSS_REVIEW_ROOT.mkdir(parents=True, exist_ok=True)
+
+    hash_groups: dict[str, list[dict]] = defaultdict(list)
+    excluded_rows: list[dict] = []
+    scan_errors: list[dict] = []
+
+    for index, path in enumerate(wav_files, start=1):
+        relative = path.relative_to(RAW_ROOT)
+        participant_id = participant_id_from_filename(path.name)
+
+        try:
+            info = sf.info(str(path))
+            if info.frames <= 0 or info.duration <= 0:
+                excluded_rows.append({
+                    "file": relative.as_posix(),
+                    "participant_id_from_filename": participant_id,
+                    "reason": "ZERO_SAMPLE_AUDIO",
+                    "sha256": "",
+                })
+                continue
+
+            file_hash = sha256_file(path)
+            hash_groups[file_hash].append({
+                "path": path,
+                "relative": relative,
+                "participant_id": participant_id,
+                "duration_seconds": float(info.duration),
+                "sample_rate_hz": int(info.samplerate),
+                "channels": int(info.channels),
+                "sha256": file_hash,
+            })
+        except Exception as exc:
+            scan_errors.append({
+                "file": relative.as_posix(),
+                "participant_id_from_filename": participant_id,
+                "reason": f"READ_OR_HASH_ERROR: {type(exc).__name__}: {exc}",
+                "sha256": "",
+            })
+
+        if index % 250 == 0 or index == len(wav_files):
+            print(f"Scanned {index}/{len(wav_files)} WAV files...")
+
+    duplicate_manifest: list[dict] = []
+    clean_manifest: list[dict] = []
+    cross_review_manifest: list[dict] = []
+    duplicate_group_count = 0
+    within_participant_duplicate_groups = 0
+    cross_participant_duplicate_groups = 0
+
+    for file_hash, members in sorted(hash_groups.items(), key=lambda item: item[0]):
+        members.sort(key=lambda item: item["relative"].as_posix().lower())
+        participant_ids = sorted({m["participant_id"] for m in members})
+        is_duplicate = len(members) > 1
+        if is_duplicate:
+            duplicate_group_count += 1
+
+        # A group spanning multiple IDs is not safe to assign to one participant.
+        # Keep one physical representative in a review-only folder, not model input.
+        cross_participant = len(participant_ids) > 1
+        if cross_participant:
+            cross_participant_duplicate_groups += 1
+            representative = members[0]
+            copied_to = safe_copy(
+                representative["path"],
+                CROSS_REVIEW_ROOT,
+                representative["relative"],
+            )
+            cross_review_manifest.append({
+                "sha256": file_hash,
+                "representative_file": representative["relative"].as_posix(),
+                "all_source_files": ";".join(m["relative"].as_posix() for m in members),
+                "participant_ids_from_filenames": ";".join(participant_ids),
+                "copies_in_group": len(members),
+                "copied_review_path": copied_to.relative_to(OUTPUT_ROOT).as_posix(),
+                "decision": "HELD_FOR_PARTICIPANT_IDENTITY_REVIEW",
+            })
+            for member in members:
+                duplicate_manifest.append({
+                    "sha256": file_hash,
+                    "file": member["relative"].as_posix(),
+                    "participant_id_from_filename": member["participant_id"],
+                    "representative_file": representative["relative"].as_posix(),
+                    "group_size": len(members),
+                    "group_type": "CROSS_PARTICIPANT",
+                    "action": (
+                        "REPRESENTATIVE_COPIED_TO_REVIEW"
+                        if member is representative else "DUPLICATE_EXCLUDED_FROM_CLEAN_INPUT"
+                    ),
+                })
+            continue
+
+        # Unique files and within-participant duplicate groups enter clean input.
+        if is_duplicate:
+            within_participant_duplicate_groups += 1
+
+        representative = members[0]
+        copied_to = safe_copy(representative["path"], UNIQUE_ROOT, representative["relative"])
+        clean_manifest.append({
+            "sha256": file_hash,
+            "file": representative["relative"].as_posix(),
+            "participant_id_from_filename": representative["participant_id"],
+            "group_size": len(members),
+            "duration_seconds": representative["duration_seconds"],
+            "sample_rate_hz": representative["sample_rate_hz"],
+            "channels": representative["channels"],
+            "copied_path": copied_to.relative_to(OUTPUT_ROOT).as_posix(),
+            "decision": "UNIQUE_COPY" if not is_duplicate else "ONE_COPY_RETAINED_WITHIN_PARTICIPANT",
+        })
+
+        for member in members:
+            if is_duplicate:
+                duplicate_manifest.append({
+                    "sha256": file_hash,
+                    "file": member["relative"].as_posix(),
+                    "participant_id_from_filename": member["participant_id"],
+                    "representative_file": representative["relative"].as_posix(),
+                    "group_size": len(members),
+                    "group_type": "WITHIN_PARTICIPANT",
+                    "action": (
+                        "REPRESENTATIVE_COPIED_TO_CLEAN_INPUT"
+                        if member is representative else "DUPLICATE_EXCLUDED_FROM_CLEAN_INPUT"
+                    ),
+                })
+
+    excluded_rows.extend(scan_errors)
+
+    def write_csv(path: Path, rows: list[dict]) -> None:
+        if not rows:
+            path.write_text("", encoding="utf-8")
+            return
+        with path.open("w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+            writer.writeheader()
+            writer.writerows(rows)
+
+    write_csv(REPORT_ROOT / "deduplication_duplicate_manifest.csv", duplicate_manifest)
+    write_csv(REPORT_ROOT / "deduplication_clean_input_manifest.csv", clean_manifest)
+    write_csv(REPORT_ROOT / "deduplication_cross_participant_review.csv", cross_review_manifest)
+    write_csv(REPORT_ROOT / "deduplication_excluded_files.csv", excluded_rows)
+
+    summary = {
+        "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+        "raw_root": str(RAW_ROOT),
+        "output_root": str(OUTPUT_ROOT),
+        "raw_audio_modified_or_deleted": False,
+        "total_wav_files_found": len(wav_files),
+        "unique_hash_groups": len(hash_groups),
+        "duplicate_groups_total": duplicate_group_count,
+        "within_participant_duplicate_groups": within_participant_duplicate_groups,
+        "cross_participant_duplicate_groups": cross_participant_duplicate_groups,
+        "clean_input_files_copied": len(clean_manifest),
+        "cross_participant_representatives_held_for_review": len(cross_review_manifest),
+        "zero_sample_or_unreadable_files_excluded": len(excluded_rows),
+        "clean_input_folder": str(UNIQUE_ROOT),
+        "cross_participant_review_folder": str(CROSS_REVIEW_ROOT),
+        "notes": [
+            "Exact byte-for-byte duplicates are identified using SHA-256.",
+            "One representative is selected deterministically by relative path sorting.",
+            "Cross-participant duplicate groups are excluded from clean input pending identity verification.",
+            "Long recordings are retained; duration alone does not exclude a recording.",
+            "Participant IDs are parsed from filename prefixes only and are not independently verified.",
+            "No DLD or typically-developing labels are inferred.",
+            "Original files under dataset/raw are never modified or deleted.",
+        ],
+    }
+    (REPORT_ROOT / "deduplication_summary.json").write_text(
+        json.dumps(summary, indent=2), encoding="utf-8"
+    )
+
+    print("\nDEDUPLICATION COMPLETE")
+    print(f"Raw WAV files: {len(wav_files)}")
+    print(f"Unique SHA-256 groups: {len(hash_groups)}")
+    print(f"Duplicate groups: {duplicate_group_count}")
+    print(f"  Within participant: {within_participant_duplicate_groups}")
+    print(f"  Across participants (held for review): {cross_participant_duplicate_groups}")
+    print(f"Clean input copies: {len(clean_manifest)}")
+    print(f"Cross-participant review copies: {len(cross_review_manifest)}")
+    print(f"Zero-sample/unreadable excluded: {len(excluded_rows)}")
+    print(f"Clean input: {UNIQUE_ROOT}")
+    print(f"Review input: {CROSS_REVIEW_ROOT}")
+    print(f"Reports: {REPORT_ROOT}")
+    print("Original dataset/raw files were NOT modified or deleted.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+'''
+path = Path("/mnt/data/prepare_deduplicated_dataset.py")
+path.write_text(script, encoding="utf-8")
+print(path, path.stat().st_size)
