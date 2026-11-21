@@ -1,13 +1,33 @@
+
+# Environment variables and secrets
 .env
 .env.*
 !.env.example
 
+# Python virtual environments
 venv/
 .venv/
 __pycache__/
+*.py[codz]
+*$py.class
+
+# Python build and packaging
+build/
+dist/
+*.egg-info/
+
+# Node.js
 node_modules/
 
-*.pyc
-.DS_Store
+# Testing and cache
+.pytest_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
 
+# System files
+.DS_Store
+Thumbs.db
+
+# Private dataset - keep locally, do not upload
 Dataset/
